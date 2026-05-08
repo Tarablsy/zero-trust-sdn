@@ -279,14 +279,6 @@ The project is intended for **educational and research purposes** only. The cred
 
 ---
 
-## Acknowledgements
-
-- **Dr. Christine Zeineh** — Head of the Department of Intelligent Information Security Engineering
-- **Dr. Muhayb Al-Naqari** — Dean of the Faculty of Artificial Intelligence Engineering
-- The faculty members of the Syrian Private University
-
----
-
 ## Contact
 
 For questions or contributions, please open an issue on this repository.
