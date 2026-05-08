@@ -1,0 +1,8 @@
+{
+  "zones": {
+    "management": { "subnet": "172.20.0.0/16", "sensitivity": "critical" },
+    "controller": { "subnet": "172.20.0.0/16", "sensitivity": "critical" },
+    "data":       { "subnet": "10.0.0.0/8",    "sensitivity": "high" },
+    "monitoring": { "subnet": "172.20.0.0/16", "sensitivity": "high" }
+  }
+}

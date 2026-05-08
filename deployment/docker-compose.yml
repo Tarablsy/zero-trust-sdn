@@ -1,0 +1,188 @@
+# ============================================================================
+# Zero Trust SDN — Docker Compose Stack
+# ============================================================================
+# All Zero Trust services run as containers on a single Docker bridge network.
+# Mininet runs separately inside WSL2.
+#
+# Start with:  docker-compose up -d
+# Stop with:   docker-compose down
+# ============================================================================
+
+version: '3.8'
+
+networks:
+  zt-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+services:
+  # ═══════════════════════════════════════════════════════════════
+  # VAULT — PKI / Certificate Authority
+  # ═══════════════════════════════════════════════════════════════
+  vault:
+    image: hashicorp/vault:1.15
+    container_name: zt-vault
+    restart: unless-stopped
+    ports:
+      - '8200:8200'
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: 'zt-root-token-2024'
+      VAULT_DEV_LISTEN_ADDRESS: '0.0.0.0:8200'
+      VAULT_ADDR: 'http://127.0.0.1:8200'
+    cap_add:
+      - IPC_LOCK
+    networks:
+      zt-net:
+        ipv4_address: 172.20.0.20
+    healthcheck:
+      test: vault status || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ═══════════════════════════════════════════════════════════════
+  # KEYCLOAK — Identity & Access Management
+  # ═══════════════════════════════════════════════════════════════
+  keycloak:
+    image: quay.io/keycloak/keycloak:22.0
+    container_name: zt-keycloak
+    restart: unless-stopped
+    command: start-dev
+    ports:
+      - '8080:8080'
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: 'ZtK3ycl0ak!2024'
+      KC_HEALTH_ENABLED: 'true'
+    networks:
+      zt-net:
+        ipv4_address: 172.20.0.30
+    healthcheck:
+      test: curl -f http://localhost:8080/health || exit 1
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  # ═══════════════════════════════════════════════════════════════
+  # OPA — Policy Engine
+  # ═══════════════════════════════════════════════════════════════
+  opa:
+    image: openpolicyagent/opa:0.58.0
+    container_name: zt-opa
+    restart: unless-stopped
+    ports:
+      - '8282:8181'    # Mapped to 8282 on host to avoid conflict with ONOS
+    command:
+      - run
+      - --server
+      - --addr
+      - '0.0.0.0:8181'
+      - --log-level
+      - info
+      - /policies
+      - /data
+    volumes:
+      - ./opa/policies:/policies
+      - ./opa/data:/data
+    networks:
+      zt-net:
+        ipv4_address: 172.20.0.40
+    healthcheck:
+      test: wget -q --spider http://localhost:8181/health || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ═══════════════════════════════════════════════════════════════
+  # ONOS — SDN Controller
+  # ═══════════════════════════════════════════════════════════════
+  onos:
+    image: onosproject/onos:2.7.0
+    container_name: zt-onos
+    restart: unless-stopped
+    ports:
+      - '8181:8181'    # ONOS Web GUI + REST API
+      - '8101:8101'    # ONOS CLI (SSH)
+      - '6653:6653'    # OpenFlow
+      - '6640:6640'    # OVSDB
+    environment:
+      ONOS_APPS: 'org.onosproject.openflow,org.onosproject.fwd,org.onosproject.proxyarp,org.onosproject.hostprovider'
+    networks:
+      zt-net:
+        ipv4_address: 172.20.0.11
+    healthcheck:
+      test: curl -u karaf:karaf -f http://localhost:8181/onos/v1/applications || exit 1
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 90s
+
+  # ═══════════════════════════════════════════════════════════════
+  # ELASTICSEARCH — Log Storage & Search
+  # ═══════════════════════════════════════════════════════════════
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: zt-elasticsearch
+    restart: unless-stopped
+    ports:
+      - '9200:9200'
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - 'ES_JAVA_OPTS=-Xms1g -Xmx1g'
+      - cluster.name=zt-monitoring
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    networks:
+      zt-net:
+        ipv4_address: 172.20.0.60
+    healthcheck:
+      test: curl -f http://localhost:9200 || exit 1
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  # ═══════════════════════════════════════════════════════════════
+  # LOGSTASH — Log Processing
+  # ═══════════════════════════════════════════════════════════════
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.11.0
+    container_name: zt-logstash
+    restart: unless-stopped
+    ports:
+      - '5044:5044'
+      - '5514:5514/udp'
+    volumes:
+      - ./elk/logstash/pipeline:/usr/share/logstash/pipeline
+      - ./elk/logstash/config/logstash.yml:/usr/share/logstash/config/logstash.yml
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      zt-net:
+        ipv4_address: 172.20.0.61
+
+  # ═══════════════════════════════════════════════════════════════
+  # KIBANA — Visualization & Dashboards
+  # ═══════════════════════════════════════════════════════════════
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.11.0
+    container_name: zt-kibana
+    restart: unless-stopped
+    ports:
+      - '5601:5601'
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      zt-net:
+        ipv4_address: 172.20.0.62
+
+volumes:
+  es-data:
